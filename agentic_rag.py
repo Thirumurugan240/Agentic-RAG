@@ -55,7 +55,7 @@ if uploaded_file:
 
     user = UserProxyAgent(
         name="User",
-        code_execution_config={"use_docker": False},  # disables Docker runtime
+        code_execution_config={"use_docker": False}, 
     )
 
 
@@ -64,10 +64,8 @@ if uploaded_file:
     if query:
         st.info("Orchestrating agents...")
 
-        # 1) Local answer
         local_answer = local_qa.run(query)
 
-        # 2) Ask coordinator LLM to decide if more is needed
         coordinator_prompt = f"""
 You are a smart AI assistant orchestrating Local RAG and Web Search.
 
@@ -81,7 +79,6 @@ Decide if this answer is enough.
 Provide a final clear answer.
 """
 
-        # Actually ask the LLM to decide
         final_llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
         # If local answer is not good, add web
         serp_result = serp.run(query)
