@@ -6,15 +6,15 @@ from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
-
-from autogen import AssistantAgent, UserProxyAgent
-
 from langchain.utilities import SerpAPIWrapper
 
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0.2)
-embeddings = OpenAIEmbeddings()
+from autogen import AssistantAgent, UserProxyAgent, config_list_from_json
+from dotenv import load_dotenv
+load_dotenv()
 
-os.environ["OPENAI_API_KEY"] = "YOUR_API_KEY"
+llm = ChatOpenAI(api_key=os.getenv("OPENAI_API_KEY"),model_name="gpt-4o", temperature=0.2)
+embeddings = OpenAIEmbeddings()
+serp = SerpAPIWrapper(serpapi_api_key=os.getenv("SERP_API_KEY"))
 
 st.title("Agentic RAG: Local PDF + Web Search")
 
@@ -28,54 +28,74 @@ if uploaded_file:
         if text:
             raw_text += text
 
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=100
+    )
     chunks = text_splitter.split_text(raw_text)
 
-    if len(chunks) == 0:
-        st.error("No text found in PDF. Try a different file.")
-    else:
-        st.success(f"Loaded {len(chunks)} chunks.")
+    vector_store = FAISS.from_texts(chunks, embedding=embeddings)
+    retriever = vector_store.as_retriever()
+    local_qa = RetrievalQA.from_chain_type(
+        llm=llm, chain_type="stuff", retriever=retriever
+    )
 
-        vector_store = FAISS.from_texts(chunks, embedding=embeddings)
-        retriever = vector_store.as_retriever()
+    st.success(f"PDF loaded and indexed ({len(chunks)} chunks)")
 
-        local_qa = RetrievalQA.from_chain_type(
-            llm=llm,
-            chain_type="stuff",
-            retriever=retriever,
+    config_list = [{"model": "gpt-4o"}]
+
+    local_rag_agent = AssistantAgent(
+        name="LocalRAG",
+        llm_config={"config_list": config_list},
+    )
+
+    web_agent = AssistantAgent(
+        name="WebSearch",
+        llm_config={"config_list": config_list},
+    )
+
+    user = UserProxyAgent(
+        name="User",
+        code_execution_config={"use_docker": False},  # disables Docker runtime
+    )
+
+
+    query = st.text_input("Ask a question:")
+
+    if query:
+        st.info("Orchestrating agents...")
+
+        # 1) Local answer
+        local_answer = local_qa.run(query)
+
+        # 2) Ask coordinator LLM to decide if more is needed
+        coordinator_prompt = f"""
+You are a smart AI assistant orchestrating Local RAG and Web Search.
+
+Here is the answer from the local PDF:
+\"\"\"{local_answer}\"\"\"
+
+Decide if this answer is enough.
+- If YES: return the local answer.
+- If NO: do a web search for \"{query}\" and combine the results.
+
+Provide a final clear answer.
+"""
+
+        # Actually ask the LLM to decide
+        final_llm = ChatOpenAI(model_name="gpt-4o", temperature=0.3)
+        # If local answer is not good, add web
+        serp_result = serp.run(query)
+        final_answer = final_llm.predict(
+            f"""
+PDF answer:
+{local_answer}
+
+Web search result:
+{serp_result}
+
+Based on both, write a single clear answer for the user.
+"""
         )
 
-        # Local RAG agent
-        rag_agent = AssistantAgent(
-            name="LocalRAG",
-            llm_config={"config_list": [{"model": "gpt-4o"}]},
-        )
-
-        # Web search agent (LangChain SerpAPI wrapper)
-        serp = SerpAPIWrapper()
-        web_search_agent = AssistantAgent(
-            name="WebSearch",
-            llm_config={"config_list": [{"model": "gpt-4o"}]},
-        )
-
-        user_proxy = UserProxyAgent(
-            name="User",
-            human_input_mode="NEVER",
-            code_execution_config=False,
-        )
-
-        query = st.text_input("Ask a question about your PDF or the web:")
-
-        if query:
-            st.info("Agent is thinking...")
-
-            local_answer = local_qa.run(query)
-
-            if len(local_answer.strip()) < 20:
-                serp_result = serp.run(query)
-                final_answer = f"**Web Search:** {serp_result}"
-            else:
-                final_answer = f"**Local PDF Answer:** {local_answer}"
-
-            st.subheader("Answer")
-            st.write(final_answer)
+        st.subheader("Final Answer")
+        st.write(final_answer)
