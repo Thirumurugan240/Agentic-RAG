@@ -7,3 +7,4 @@ autogen
 openai
 tiktoken
 python-dotenv
+google-search-results
